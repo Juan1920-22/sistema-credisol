@@ -6,6 +6,7 @@ requiereRol([1]);
 
 $nombre   = $_SESSION['nombres'];
 $apellido = $_SESSION['apellidos'];
+$id       = $_SESSION['usuario_id'];
 $base     = getBase();
 
 // Cargar foto de perfil desde BD si no está en sesión

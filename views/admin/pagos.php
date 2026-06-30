@@ -11,6 +11,22 @@ $admin_id = $_SESSION['usuario_id'];
 $base     = getBase();
 actualizarMora($conn); // mora automática
 
+// Rechazar comprobante de Yape (vuelve a pendiente)
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'rechazar_yape') {
+    $pago_id = intval($_POST['pago_id']);
+    $conn->query("UPDATE pagos SET estado='pendiente', comprobante_yape=NULL WHERE id=$pago_id");
+    $pinfo = $conn->query("SELECT cp.cliente_id, p.numero_cuota FROM pagos p JOIN cartera_prestamos cp ON p.cartera_id=cp.id WHERE p.id=$pago_id")->fetch_assoc();
+    if ($pinfo) {
+        $msg = "Tu comprobante de la cuota #" . $pinfo['numero_cuota'] . " no pudo verificarse. Por favor vuelve a subirlo.";
+        $n = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Comprobante rechazado', ?, 'error')");
+        $n->bind_param("is", $pinfo['cliente_id'], $msg);
+        $n->execute();
+    }
+    setMensaje("Comprobante rechazado. Se notificó al cliente.", "advertencia");
+    header("Location: pagos.php");
+    exit;
+}
+
 // Registrar pago de cuota
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'pagar') {
     $pago_id    = intval($_POST['pago_id']);
@@ -18,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'pagar') {
     $monto      = floatval($_POST['monto_pagado']);
 
     // Obtener datos del pago
-    $pago = $conn->query("SELECT * FROM pagos WHERE id=$pago_id AND estado='pendiente'")->fetch_assoc();
+    $pago = $conn->query("SELECT * FROM pagos WHERE id=$pago_id AND estado IN ('pendiente','por_verificar')")->fetch_assoc();
     if (!$pago) {
         setMensaje("Cuota no válida o ya pagada.", "error");
         header("Location: pagos.php");
@@ -301,6 +317,53 @@ if (isset($_GET['cartera'])) {
 
 <main class="contenido">
     <?php mostrarMensaje(); ?>
+
+    <?php
+    // Pagos reportados por Yape pendientes de verificación
+    $porVerificar = $conn->query(
+        "SELECT p.*, cp.codigo as codigo_cartera, CONCAT(u.nombres,' ',u.apellidos) AS cliente, u.dni
+         FROM pagos p
+         JOIN cartera_prestamos cp ON p.cartera_id = cp.id
+         JOIN usuarios u ON cp.cliente_id = u.id
+         WHERE p.estado = 'por_verificar'
+         ORDER BY p.fecha_reporte DESC"
+    )->fetch_all(MYSQLI_ASSOC);
+    ?>
+
+    <?php if (!empty($porVerificar)): ?>
+    <div class="card" style="border:2px solid #722ED1;background:#faf5ff;">
+        <h3 style="color:#722ED1;">Pagos por Yape — Pendientes de Verificación (<?= count($porVerificar) ?>)</h3>
+        <table>
+            <thead><tr><th>Cliente</th><th>Cuota</th><th>Monto</th><th>Comprobante</th><th>Reportado</th><th>Acción</th></tr></thead>
+            <tbody>
+            <?php foreach ($porVerificar as $pv): ?>
+            <tr>
+                <td style="font-weight:600;"><?= htmlspecialchars($pv['cliente']) ?><br><span style="color:#94a3b8;font-size:.74rem;">DNI: <?= $pv['dni'] ?></span></td>
+                <td>#<?= $pv['numero_cuota'] ?> — <?= $pv['codigo_cartera'] ?></td>
+                <td style="font-weight:700;"><?= soles($pv['monto_cuota']) ?></td>
+                <td><a href="../../<?= $pv['comprobante_yape'] ?>" target="_blank" style="color:#722ED1;font-weight:600;">Ver imagen</a></td>
+                <td style="color:#64748b;font-size:.78rem;"><?= fechaCorta($pv['fecha_reporte']) ?></td>
+                <td style="display:flex;gap:6px;">
+                    <form method="POST" style="display:inline;">
+                        <input type="hidden" name="accion" value="pagar">
+                        <input type="hidden" name="pago_id" value="<?= $pv['id'] ?>">
+                        <input type="hidden" name="cartera_id" value="<?= $pv['cartera_id'] ?>">
+                        <input type="hidden" name="monto_pagado" value="<?= $pv['monto_cuota'] ?>">
+                        <button type="submit" style="background:#059669;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:.74rem;font-weight:700;cursor:pointer;">Aprobar</button>
+                    </form>
+                    <form method="POST" style="display:inline;">
+                        <input type="hidden" name="accion" value="rechazar_yape">
+                        <input type="hidden" name="pago_id" value="<?= $pv['id'] ?>">
+                        <button type="submit" style="background:#dc2626;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:.74rem;font-weight:700;cursor:pointer;">Rechazar</button>
+                    </form>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+
     <div class="grid2">
 
         <!-- CARTERAS ACTIVAS -->
@@ -374,8 +437,8 @@ if (isset($_GET['cartera'])) {
                 <tbody>
                 <?php foreach ($cuotas as $c):
                     $es_vencida = $c['estado'] == 'vencido';
-                    $bc = ['pendiente'=>'b-pend','pagado'=>'b-pag','vencido'=>'b-venc'];
-                    $bt = ['pendiente'=>'Pendiente','pagado'=>'Pagado','vencido'=>'Vencido'];
+                    $bc = ['pendiente'=>'b-pend','pagado'=>'b-pag','vencido'=>'b-venc','por_verificar'=>'b-venc'];
+                    $bt = ['pendiente'=>'Pendiente','pagado'=>'Pagado','vencido'=>'Vencido','por_verificar'=>'Por verificar (Yape)'];
                 ?>
                 <tr class="<?= $es_vencida ? 'vencida' : '' ?>">
                     <td style="font-weight:700;">#<?= $c['numero_cuota'] ?></td>

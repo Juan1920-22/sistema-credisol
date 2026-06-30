@@ -11,6 +11,43 @@ $apellido = $_SESSION['apellidos'];
 $base     = getBase();
 actualizarMora($conn); // mora automática
 
+// Procesar reporte de pago con Yape
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['accion']) && $_POST['accion'] == 'reportar_yape') {
+    $cuota_id = intval($_POST['cuota_id'] ?? 0);
+    if (isset($_FILES['comprobante']) && $_FILES['comprobante']['error'] === 0) {
+        $archivo = $_FILES['comprobante'];
+        $ext = strtolower(pathinfo($archivo['name'], PATHINFO_EXTENSION));
+        if (in_array($ext, ['jpg','jpeg','png','pdf']) && $archivo['size'] <= 5*1024*1024) {
+            $carpeta = __DIR__ . "/../../public/uploads/comprobantes/";
+            if (!is_dir($carpeta)) mkdir($carpeta, 0777, true);
+            $nombre_archivo = "comprobante_" . $cuota_id . "_" . time() . "." . $ext;
+            if (move_uploaded_file($archivo['tmp_name'], $carpeta . $nombre_archivo)) {
+                $ruta = "public/uploads/comprobantes/" . $nombre_archivo;
+                $stmt = $conn->prepare("UPDATE pagos SET estado='por_verificar', comprobante_yape=?, fecha_reporte=NOW() WHERE id=? AND cartera_id IN (SELECT id FROM cartera_prestamos WHERE cliente_id=?)");
+                $stmt->bind_param("sii", $ruta, $cuota_id, $id);
+                $stmt->execute();
+
+                // Notificar al administrador
+                $cuota_info = $conn->query("SELECT p.numero_cuota, cp.codigo_cuenta, u.nombres, u.apellidos FROM pagos p JOIN cartera_prestamos cp ON p.cartera_id=cp.id JOIN usuarios u ON cp.cliente_id=u.id WHERE p.id=$cuota_id")->fetch_assoc();
+                $admins = $conn->query("SELECT id FROM usuarios WHERE rol_id=3 AND activo=1");
+                if ($admins) {
+                    while ($adm = $admins->fetch_assoc()) {
+                        $msg = "Cliente reportó pago de la cuota #" . ($cuota_info['numero_cuota'] ?? '') . " vía Yape. Pendiente de verificación.";
+                        $n = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Pago por verificar', ?, 'advertencia')");
+                        $n->bind_param("is", $adm['id'], $msg);
+                        $n->execute();
+                    }
+                }
+                setMensaje("Comprobante enviado. El administrador verificará tu pago pronto.", "exito");
+            }
+        } else {
+            setMensaje("Solo JPG, PNG o PDF hasta 5MB.", "error");
+        }
+    }
+    header("Location: mis_pagos.php");
+    exit;
+}
+
 // Cargar foto de perfil desde BD si no está en sesión
 if (empty($_SESSION['foto'])) {
     $u = $conn->query("SELECT foto FROM usuarios WHERE id=$id")->fetch_assoc();
@@ -110,6 +147,21 @@ foreach ($carteras as $c) {
         .b-pend{background:#fef3c7;color:#92400e;}
         .b-pag{background:#d1fae5;color:#065f46;}
         .b-venc{background:#fee2e2;color:#991b1b;}
+        .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999;align-items:center;justify-content:center;}
+        .modal-overlay.show{display:flex;}
+        .modal-yape{background:#fff;border-radius:16px;padding:28px;max-width:380px;width:90%;text-align:center;}
+        .modal-yape h3{font-size:1.1rem;font-weight:800;color:#722ED1;margin-bottom:4px;}
+        .modal-yape p{font-size:.82rem;color:#64748b;margin-bottom:16px;}
+        .qr-box{background:#f8fafc;border:2px dashed #722ED1;border-radius:12px;padding:20px;margin-bottom:16px;}
+        .qr-box .monto{font-size:1.6rem;font-weight:800;color:#0f172a;margin-bottom:10px;}
+        .qr-box img{width:160px;height:160px;margin:0 auto 10px;display:block;border-radius:8px;}
+        .qr-box .numero{font-size:1.1rem;font-weight:700;color:#722ED1;}
+        .qr-box .nombre{font-size:.78rem;color:#64748b;}
+        .form-upload label{display:block;text-align:left;font-size:.8rem;font-weight:600;color:#374151;margin-bottom:6px;}
+        .form-upload input[type=file]{width:100%;padding:10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.82rem;margin-bottom:14px;}
+        .btn-modal{padding:11px 20px;border-radius:8px;font-size:.88rem;font-weight:700;border:none;cursor:pointer;width:100%;margin-bottom:8px;}
+        .btn-modal.enviar{background:#722ED1;color:#fff;}
+        .btn-modal.cancelar{background:#f1f5f9;color:#64748b;}
 
         /* SIN PAGOS */
         .empty{text-align:center;padding:60px 20px;color:#94a3b8;}
@@ -316,6 +368,7 @@ foreach ($carteras as $c) {
                     <th>Monto</th>
                     <th>Fecha Pago</th>
                     <th>Estado</th>
+                    <th>Acción</th>
                 </tr>
             </thead>
             <tbody>
@@ -325,8 +378,8 @@ foreach ($carteras as $c) {
                 $estado = $cuota['estado'];
                 // Verificar si está vencida
                 if ($estado == 'pendiente' && $venc < $hoy) $estado = 'vencido';
-                $bc = ['pendiente'=>'b-pend','pagado'=>'b-pag','vencido'=>'b-venc'];
-                $bt = ['pendiente'=>'Pendiente','pagado'=>'Pagado','vencido'=>'Vencido'];
+                $bc = ['pendiente'=>'b-pend','pagado'=>'b-pag','vencido'=>'b-venc','por_verificar'=>'b-venc'];
+                $bt = ['pendiente'=>'Pendiente','pagado'=>'Pagado','vencido'=>'Vencido','por_verificar'=>'Por verificar'];
                 $rowStyle = $estado == 'vencido' ? 'background:#fff5f5;' : '';
             ?>
             <tr style="<?= $rowStyle ?>">
@@ -335,6 +388,18 @@ foreach ($carteras as $c) {
                 <td style="font-weight:600;"><?= soles($cuota['monto_cuota']) ?></td>
                 <td style="color:#64748b;"><?= $cuota['fecha_pago'] ? fechaCorta($cuota['fecha_pago']) : '—' ?></td>
                 <td><span class="badge <?= $bc[$estado]??'b-pend' ?>"><?= $bt[$estado]??'Pendiente' ?></span></td>
+                <td>
+                    <?php if ($estado=='pendiente' || $estado=='vencido'): ?>
+                    <button onclick="abrirYape(<?= $cuota['id'] ?>, '<?= soles($cuota['monto_cuota']) ?>', <?= $cuota['numero_cuota'] ?>)"
+                            style="background:#722ED1;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:.74rem;font-weight:700;cursor:pointer;">
+                        Pagar con Yape
+                    </button>
+                    <?php elseif ($estado=='por_verificar'): ?>
+                    <span style="font-size:.72rem;color:#92400e;">En revisión</span>
+                    <?php else: ?>
+                    <span style="font-size:.72rem;color:#94a3b8;">—</span>
+                    <?php endif; ?>
+                </td>
             </tr>
             <?php endforeach; ?>
             </tbody>
@@ -351,6 +416,14 @@ foreach ($carteras as $c) {
 <script>
 function abrirMenu(){document.getElementById('sidebar').classList.add('open');document.getElementById('overlay').classList.add('show');}
 function cerrarMenu(){document.getElementById('sidebar').classList.remove('open');document.getElementById('overlay').classList.remove('show');}
+function abrirYape(cuotaId, monto, numCuota){
+    document.getElementById('yapeCuotaId').value = cuotaId;
+    document.getElementById('yapeMonto').textContent = monto + ' — Cuota #' + numCuota;
+    document.getElementById('modalYape').classList.add('show');
+}
+function cerrarYape(){
+    document.getElementById('modalYape').classList.remove('show');
+}
 </script>
 
 <!-- BOTÓN CERRAR SESIÓN MÓVIL -->
@@ -360,5 +433,28 @@ function cerrarMenu(){document.getElementById('sidebar').classList.remove('open'
     </svg>
     Cerrar Sesión
 </a>
+
+<!-- MODAL PAGO YAPE -->
+<div class="modal-overlay" id="modalYape">
+    <div class="modal-yape">
+        <h3>Pagar con Yape</h3>
+        <p>Escanea el código o usa el número, luego sube tu comprobante</p>
+        <div class="qr-box">
+            <div class="monto" id="yapeMonto">S/ 0.00</div>
+            <img src="../../public/img/qr_yape.png" alt="QR Yape" onerror="this.style.display='none'">
+            <div class="numero">987 654 321</div>
+            <div class="nombre">CREDISOL Cooperativa</div>
+        </div>
+        <form method="POST" enctype="multipart/form-data" class="form-upload">
+            <input type="hidden" name="accion" value="reportar_yape">
+            <input type="hidden" name="cuota_id" id="yapeCuotaId" value="">
+            <label>Sube tu comprobante de pago (foto o captura)</label>
+            <input type="file" name="comprobante" accept=".jpg,.jpeg,.png,.pdf" required>
+            <button type="submit" class="btn-modal enviar">Enviar comprobante</button>
+        </form>
+        <button type="button" class="btn-modal cancelar" onclick="cerrarYape()">Cancelar</button>
+    </div>
+</div>
+
 </body>
 </html>
