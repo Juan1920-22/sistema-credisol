@@ -2,33 +2,26 @@
 // helpers/funciones.php
 
 function getBase() {
-    $protocolo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    // ngrok envía el host real en HTTP_X_FORWARDED_HOST
     if (isset($_SERVER['HTTP_X_FORWARDED_HOST'])) {
         return 'https://' . $_SERVER['HTTP_X_FORWARDED_HOST'] . '/cooperativa';
     }
+    // ngrok también puede enviar el host en HTTP_HOST directamente
+    if (isset($_SERVER['HTTP_HOST']) && strpos($_SERVER['HTTP_HOST'], 'ngrok') !== false) {
+        return 'https://' . $_SERVER['HTTP_HOST'] . '/cooperativa';
+    }
+    // Local
     return 'http://localhost/cooperativa';
 }
 
 function limpiar($valor) {
     return htmlspecialchars(strip_tags(trim($valor)));
 }
-// ===== FUNCIÓN PURA 1: Formateo de moneda =====
-// - Entrada: número flotante
-// - Salida: string formateado
-// - Sin efectos secundarios
-// - Transparencia referencial: soles(1500) = "S/ 1,500.00" SIEMPRE
+
 function soles($monto) {
     return "S/ " . number_format($monto, 2, '.', ',');
 }
-// Ejemplos de uso:
-// soles(1500)     → "S/ 1,500.00"
-// soles(0)        → "S/ 0.00"
-// soles(99999.99) → "S/ 99,999.99"
 
-// ===== FUNCIÓN PURA 2: Formateo de fechas =====
-// - Entrada: string de fecha en formato Y-m-d
-// - Salida: string en formato d/m/Y
-// - Sin efectos secundarios
 function fechaCorta($fecha) {
     if (!$fecha) return "—";
     return date("d/m/Y", strtotime($fecha));

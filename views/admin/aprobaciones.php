@@ -51,7 +51,36 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'rechazar'
     exit;
 }
 
-// Obtener solicitudes aprobadas por asesor (listas para aprobación final)
+// Enviar contrato firmado por admin al asesor
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'enviar_contrato_asesor') {
+    $sid = intval($_POST['solicitud_id']);
+    $sol = $conn->query(
+        "SELECT s.*, CONCAT(u.nombres,' ',u.apellidos) AS cliente_nombre
+         FROM solicitudes s
+         JOIN usuarios u ON s.cliente_id=u.id
+         WHERE s.id=$sid AND s.estado='aprobada'"
+    )->fetch_assoc();
+
+    if ($sol) {
+        // Notificar al asesor con instrucciones claras
+        $msg = "El administrador aprobo y firmo el contrato de la solicitud {$sol['codigo']} del cliente {$sol['cliente_nombre']}. Descarga el contrato desde Aprobaciones, presentaselo al cliente para que lo firme y luego subelo al sistema.";
+        $n = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Contrato listo para firma del cliente', ?, 'info')");
+        $n->bind_param("is", $sol['asesor_id'], $msg);
+        $n->execute();
+
+        // Notificar al cliente tambien
+        $msg_c = "Tu solicitud {$sol['codigo']} fue aprobada. El contrato esta siendo preparado. Pronto tu asesor te lo presentara para que lo firmes.";
+        $nc = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Contrato en preparacion', ?, 'exito')");
+        $nc->bind_param("is", $sol['cliente_id'], $msg_c);
+        $nc->execute();
+
+        setMensaje("Contrato enviado al asesor. El asesor procedera a presentarselo al cliente para su firma.", "exito");
+    }
+    header("Location: aprobaciones.php?id=$sid");
+    exit;
+}
+
+// Obtener solicitudes aprobadas por asesor (listas para aprobacion final)
 $solicitudes = $conn->query(
     "SELECT s.*, tp.nombre AS tipo, tp.tasa_interes,
      CONCAT(c.nombres,' ',c.apellidos) AS cliente, c.dni AS cliente_dni,
@@ -63,7 +92,7 @@ $solicitudes = $conn->query(
      JOIN usuarios c ON s.cliente_id = c.id
      LEFT JOIN usuarios a ON s.asesor_id = a.id
      LEFT JOIN historial_crediticio h ON h.cliente_id = c.id
-     WHERE s.estado = 'aprobada_asesor'
+     WHERE s.estado IN ('aprobada_asesor','aprobada')
      ORDER BY s.fecha_solicitud ASC"
 )->fetch_all(MYSQLI_ASSOC);
 
@@ -109,8 +138,8 @@ if (isset($_GET['id'])) {
         .uchip .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#d97706);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.72rem;font-weight:700;}
         .uchip span{font-size:.83rem;font-weight:600;color:#92400e;}
         .contenido{margin-left:260px;margin-top:62px;padding:24px;}
-        .menu-btn{display:none;background:none;border:none;cursor:pointer;color:#64748b;padding:4px;}
-        .menu-btn svg{width:22px;height:22px;}
+        .menu-btn{display:none;background:#1d4ed8;border:none;cursor:pointer;color:#fff;padding:8px 14px;border-radius:8px;font-size:.8rem;font-weight:700;align-items:center;gap:6px;}
+        .menu-btn svg{width:20px;height:20px;}
         .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99;}
         .overlay.show{display:block;}
 
@@ -168,6 +197,48 @@ if (isset($_GET['id'])) {
             .menu-btn{display:flex !important;}
             .grid2{grid-template-columns:1fr;}
         }
+
+        /* BOTÓN CERRAR SESIÓN FIJO EN MÓVIL */
+        .btn-logout-movil{
+            display:none;
+            position:fixed;
+            bottom:16px; right:16px;
+            background:#ef4444;
+            color:#fff;
+            border:none;
+            border-radius:50px;
+            padding:12px 20px;
+            font-size:.85rem;
+            font-weight:700;
+            cursor:pointer;
+            z-index:150;
+            box-shadow:0 4px 12px rgba(239,68,68,.4);
+            text-decoration:none;
+            align-items:center;
+            gap:8px;
+        }
+        .btn-logout-movil svg{width:16px;height:16px;}
+        @media(max-width:768px){
+            .btn-logout-movil{display:flex;}
+        }
+
+        /* CAMPANITA */
+        .notif-wrap{position:relative;}
+        .notif-btn{background:none;border:none;cursor:pointer;position:relative;padding:6px;color:#64748b;display:flex;align-items:center;border-radius:8px;transition:background .2s;}
+        .notif-btn:hover{background:#f1f5f9;}
+        .notif-badge{position:absolute;top:0;right:0;background:#ef4444;color:#fff;font-size:.62rem;font-weight:700;padding:2px 5px;border-radius:20px;min-width:18px;text-align:center;}
+        .notif-panel{position:fixed;right:16px;top:70px;width:320px;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.2);z-index:9999;border:1px solid #e2e8f0;overflow:hidden;}
+        .notif-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:.85rem;font-weight:700;color:#0f172a;}
+        .notif-lista{max-height:320px;overflow-y:auto;}
+        .notif-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #f8fafc;cursor:pointer;transition:background .15s;}
+        .notif-item:hover{background:#f8fafc;}
+        .notif-item.no-leida{background:#eff6ff;}
+        .notif-ico{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.95rem;}
+        .notif-ico.exito{background:#d1fae5;}.notif-ico.error{background:#fee2e2;}.notif-ico.info{background:#dbeafe;}.notif-ico.advertencia{background:#fef3c7;}
+        .notif-titulo{font-size:.8rem;font-weight:700;color:#0f172a;margin-bottom:2px;}
+        .notif-msg{font-size:.74rem;color:#64748b;line-height:1.4;}
+        .notif-hora{font-size:.67rem;color:#94a3b8;margin-top:3px;}
+        @media(max-width:480px){.notif-panel{width:260px;right:-40px;}}
     </style>
 </head>
 <body>
@@ -208,7 +279,22 @@ if (isset($_GET['id'])) {
         <button class="menu-btn" onclick="abrirMenu()"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h1>Aprobaciones Finales</h1>
     </div>
-    <div class="uchip">
+    
+<!-- CAMPANITA NOTIFICACIONES -->
+<div class="notif-wrap" id="notifWrap">
+    <button class="notif-btn" onclick="toggleNotif()" title="Notificaciones">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+        <span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+    </button>
+    <div class="notif-panel" id="notifPanel" style="display:none;">
+        <div class="notif-header">
+            <span>Notificaciones</span>
+            <button onclick="leerTodas()" style="font-size:.72rem;color:#3b82f6;background:none;border:none;cursor:pointer;font-weight:600;">Leídas</button>
+        </div>
+        <div id="notifLista"><div style="text-align:center;padding:20px;color:#94a3b8;font-size:.82rem;">Cargando...</div></div>
+    </div>
+</div>
+        <div class="uchip">
         <div class="ava"><?= strtoupper(substr($nombre,0,1)) ?></div>
         <span><?= htmlspecialchars($nombre) ?></span>
     </div>
@@ -254,26 +340,30 @@ if (isset($_GET['id'])) {
                 <p>Selecciona una solicitud de la lista para ver el detalle y tomar una decisión.</p>
             </div>
             <?php else: ?>
+            <?php
+            // Traer documentos del cliente
+            $docs_admin = $conn->query(
+                "SELECT * FROM documentos WHERE solicitud_id={$detalle['id']} ORDER BY subido_en DESC"
+            )->fetch_all(MYSQLI_ASSOC);
+            $tipos_doc = ['dni'=>'DNI','recibo_ingreso'=>'Boleta/Ingreso','recibo_servicio'=>'Recibo Servicios','otro'=>'Otro'];
+            ?>
             <h3><?= $detalle['codigo'] ?> <span class="badge baa">Aprobada por Asesor</span></h3>
 
             <!-- DATOS CLIENTE -->
             <div style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Cliente</div>
             <div class="det-row"><span>Nombre</span><span><?= htmlspecialchars($detalle['cliente']) ?></span></div>
             <div class="det-row"><span>DNI</span><span><?= $detalle['cliente_dni'] ?></span></div>
-            <div class="det-row"><span>Teléfono</span><span><?= $detalle['cliente_tel']??'—' ?></span></div>
+            <div class="det-row"><span>Telefono</span><span><?= $detalle['cliente_tel']??'—' ?></span></div>
             <div class="det-row"><span>Ingreso mensual</span><span><?= soles($detalle['ingreso_mensual']??0) ?></span></div>
 
-            <!-- DATOS PRÉSTAMO -->
-            <div style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase;margin:14px 0 8px;">Préstamo</div>
+            <!-- DATOS PRESTAMO -->
+            <div style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase;margin:14px 0 8px;">Prestamo</div>
             <div class="det-row"><span>Tipo</span><span><?= $detalle['tipo'] ?></span></div>
             <div class="det-row"><span>Monto</span><span style="color:#1d4ed8;font-size:1rem;"><?= soles($detalle['monto_solicitado']) ?></span></div>
             <div class="det-row"><span>Plazo</span><span><?= $detalle['plazo_meses'] ?> meses</span></div>
             <div class="det-row"><span>Cuota estimada</span><span><?= soles($detalle['cuota_estimada']) ?></span></div>
             <div class="det-row"><span>Tasa</span><span><?= $detalle['tasa_interes'] ?>% anual</span></div>
             <div class="det-row"><span>Motivo</span><span style="max-width:180px;text-align:right;"><?= htmlspecialchars($detalle['motivo']) ?></span></div>
-            <?php if ($detalle['observaciones']): ?>
-            <div class="det-row"><span>Obs. Asesor</span><span style="max-width:180px;text-align:right;color:#7c3aed;"><?= htmlspecialchars($detalle['observaciones']) ?></span></div>
-            <?php endif; ?>
 
             <!-- HISTORIAL CREDITICIO -->
             <div style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase;margin:14px 0 8px;">Historial Crediticio</div>
@@ -287,16 +377,98 @@ if (isset($_GET['id'])) {
             </div>
             <div class="det-row"><span>Puntualidad</span><span><?= ucfirst($detalle['puntualidad']??'—') ?></span></div>
             <div class="det-row"><span>Deudas actuales</span><span style="color:<?= ($detalle['deudas_actuales']??0)>0?'#dc2626':'#059669' ?>"><?= soles($detalle['deudas_actuales']??0) ?></span></div>
-            <div class="det-row"><span>En Infocorp</span><span style="color:<?= $detalle['esta_en_infocorp']?'#dc2626':'#059669' ?>"><?= $detalle['esta_en_infocorp'] ? 'SÍ — RIESGO' : 'No' ?></span></div>
+            <div class="det-row"><span>En Infocorp</span><span style="color:<?= $detalle['esta_en_infocorp']?'#dc2626':'#059669' ?>"><?= $detalle['esta_en_infocorp'] ? 'SI — RIESGO' : 'No' ?></span></div>
 
-            <!-- ACCIONES -->
-            <div style="margin-top:18px;">
+            <!-- DOCUMENTOS DEL CLIENTE -->
+            <div style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase;margin:14px 0 8px;">
+                Documentos del Cliente (<?= count($docs_admin) ?>)
+            </div>
+            <?php if (empty($docs_admin)): ?>
+            <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:.8rem;color:#92400e;text-align:center;margin-bottom:12px;">
+                El cliente no ha subido documentos aun.
+            </div>
+            <?php else: ?>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">
+                <?php foreach ($docs_admin as $doc):
+                    $ext_d = strtolower(pathinfo($doc['nombre_archivo'], PATHINFO_EXTENSION));
+                    $es_img_d = in_array($ext_d, ['jpg','jpeg','png','webp']);
+                ?>
+                <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;">
+                    <?php if ($es_img_d): ?>
+                    <a href="../../<?= $doc['ruta'] ?>" target="_blank">
+                        <img src="../../<?= $doc['ruta'] ?>" style="width:100%;height:70px;object-fit:cover;display:block;">
+                    </a>
+                    <?php else: ?>
+                    <a href="../../<?= $doc['ruta'] ?>" target="_blank"
+                       style="display:flex;align-items:center;justify-content:center;height:70px;background:#fff5f5;text-decoration:none;">
+                        <svg fill="none" viewBox="0 0 24 24" stroke="#ef4444" stroke-width="1.5" style="width:28px;height:28px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    </a>
+                    <?php endif; ?>
+                    <div style="padding:4px 6px;font-size:.66rem;color:#64748b;font-weight:600;"><?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?></div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- ACCIONES SEGUN ESTADO -->
+            <div style="margin-top:10px;">
+
+                <?php if ($detalle['estado'] == 'aprobada_asesor'): ?>
+                <!-- PASO 1: Admin verifica documentos y aprueba -->
+                <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;margin-bottom:12px;font-size:.82rem;color:#1e40af;">
+                    Verifica los documentos del cliente arriba antes de aprobar.
+                </div>
                 <a href="aprobaciones.php?aprobar=<?= $detalle['id'] ?>"
                    class="btn-aprobar"
-                   style="display:block;text-align:center;text-decoration:none;"
-                   onclick="return confirm('¿Aprobar definitivamente la solicitud <?= $detalle['codigo'] ?>?')">
-                   Aprobar y Enviar a Desembolso
+                   style="display:block;text-align:center;text-decoration:none;margin-bottom:10px;"
+                   onclick="return confirm('¿Confirmas que los documentos estan en orden y apruebas la solicitud <?= $detalle['codigo'] ?>?')">
+                   Documentos verificados — Aprobar Solicitud
                 </a>
+
+                <?php elseif ($detalle['estado'] == 'aprobada'): ?>
+
+                <!-- PASO 2: Generar contrato con firma del admin -->
+                <?php if (empty($detalle['contrato_firmado'])): ?>
+                <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;margin-bottom:10px;font-size:.82rem;color:#1e40af;line-height:1.6;">
+                    Solicitud aprobada. Genera el contrato, firmalo y envialo al asesor para que el cliente lo firme.
+                </div>
+                <a href="contrato.php?id=<?= $detalle['id'] ?>" target="_blank"
+                   style="display:block;text-align:center;text-decoration:none;padding:12px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border-radius:8px;font-size:.9rem;font-weight:700;margin-bottom:10px;">
+                   Generar e Imprimir Contrato
+                </a>
+                <!-- Enviar contrato al asesor por notificacion -->
+                <form method="POST">
+                    <input type="hidden" name="accion" value="enviar_contrato_asesor">
+                    <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+                    <button type="submit"
+                            onclick="return confirm('¿Confirmas que ya firmaste el contrato y lo envias al asesor?')"
+                            style="width:100%;padding:11px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;margin-bottom:8px;">
+                        Contrato firmado — Enviar al Asesor
+                    </button>
+                </form>
+
+                <?php else: ?>
+                <!-- PASO 3: Contrato firmado por cliente + metodo registrado -->
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px;margin-bottom:10px;">
+                    <div style="font-size:.84rem;font-weight:700;color:#065f46;">Contrato firmado y metodo de desembolso confirmado</div>
+                    <div style="font-size:.75rem;color:#64748b;margin-top:3px;">
+                        Metodo: <?= $detalle['metodo_desembolso']=='caja'?'Retiro por Caja':'Transferencia Bancaria' ?>
+                        <?php if ($detalle['banco_desembolso']): ?> — <?= htmlspecialchars($detalle['banco_desembolso']) ?><?php endif; ?>
+                    </div>
+                </div>
+                <?php if ($detalle['listo_para_desembolso']): ?>
+                <a href="desembolsos.php?id=<?= $detalle['id'] ?>"
+                   style="display:block;text-align:center;text-decoration:none;padding:12px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border-radius:8px;font-size:.95rem;font-weight:700;margin-bottom:10px;">
+                   Proceder al Desembolso
+                </a>
+                <?php else: ?>
+                <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px;text-align:center;font-size:.82rem;color:#92400e;margin-bottom:10px;">
+                    Esperando que el asesor registre el metodo de desembolso del cliente.
+                </div>
+                <?php endif; ?>
+                <?php endif; ?>
+
+                <?php endif; ?>
 
                 <button class="btn-rechazar" onclick="mostrarRechazar(<?= $detalle['id'] ?>, '<?= $detalle['codigo'] ?>')">
                     Rechazar Solicitud
@@ -339,5 +511,13 @@ function cerrarRechazar() {
     document.getElementById('modalRechazar').style.display = 'none';
 }
 </script>
+
+<!-- BOTÓN CERRAR SESIÓN MÓVIL -->
+<a href="../../controllers/AuthController.php?accion=logout" class="btn-logout-movil">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+    </svg>
+    Cerrar Sesión
+</a>
 </body>
 </html>

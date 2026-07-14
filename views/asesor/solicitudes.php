@@ -10,7 +10,37 @@ $apellido  = $_SESSION['apellidos'];
 $asesor_id = $_SESSION['usuario_id'];
 $base      = getBase();
 
-// GUARDAR HISTORIAL CREDITICIO
+// SUBIR CONTRATO FIRMADO
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'subir_contrato') {
+    $sid = intval($_POST['solicitud_id'] ?? 0);
+    if (isset($_FILES['contrato']) && $_FILES['contrato']['error'] === 0) {
+        $archivo = $_FILES['contrato'];
+        $ext = strtolower(pathinfo($archivo['name'], PATHINFO_EXTENSION));
+        if (in_array($ext, ['jpg','jpeg','png','pdf']) && $archivo['size'] <= 10*1024*1024) {
+            $carpeta = __DIR__ . "/../../public/uploads/contratos/";
+            if (!is_dir($carpeta)) mkdir($carpeta, 0777, true);
+            $nombre_archivo = "contrato_firmado_" . $sid . "_" . time() . "." . $ext;
+            if (move_uploaded_file($archivo['tmp_name'], $carpeta . $nombre_archivo)) {
+                $ruta = "public/uploads/contratos/" . $nombre_archivo;
+                $conn->query("UPDATE solicitudes SET contrato_firmado='$ruta', fecha_firma=NOW() WHERE id=$sid AND asesor_id=$asesor_id");
+                // Notificar al administrador
+                $sol_info = $conn->query("SELECT codigo FROM solicitudes WHERE id=$sid")->fetch_assoc();
+                $admins = $conn->query("SELECT id FROM usuarios WHERE rol_id=3 AND activo=1");
+                while ($adm = $admins->fetch_assoc()) {
+                    $msg = "El asesor subio el contrato firmado de la solicitud " . $sol_info['codigo'] . ". Ya puede proceder con el desembolso.";
+                    $n = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Contrato firmado listo', ?, 'exito')");
+                    $n->bind_param("is", $adm['id'], $msg);
+                    $n->execute();
+                }
+                setMensaje("Contrato firmado subido correctamente. El administrador fue notificado.", "exito");
+            }
+        } else {
+            setMensaje("Solo PDF, JPG o PNG hasta 10MB.", "error");
+        }
+    }
+    header("Location: solicitudes.php?id=$sid");
+    exit;
+}
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'guardar_historial') {
     $cliente_id          = intval($_POST['cliente_id']);
     $score               = intval($_POST['score_crediticio'] ?? 500);
@@ -43,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'guardar_h
     header("Location: solicitudes.php?id=$solicitud_id");
     exit;
 }
-//OBSERVER
+
 // Aprobar solicitud
 if (isset($_GET['aprobar'])) {
     $sid = intval($_GET['aprobar']);
@@ -97,7 +127,7 @@ $sql = "SELECT s.*, tp.nombre AS tipo, tp.tasa_interes,
         WHERE s.asesor_id=$asesor_id";
 
 if ($filtro == 'pendientes') $sql .= " AND s.estado IN ('pendiente','en_evaluacion')";
-elseif ($filtro == 'evaluadas') $sql .= " AND s.estado IN ('aprobada_asesor','rechazada_asesor')";
+elseif ($filtro == 'evaluadas') $sql .= " AND s.estado IN ('aprobada_asesor','rechazada_asesor','aprobada','desembolsada')";
 
 $sql .= " ORDER BY s.fecha_solicitud ASC";
 $solicitudes = $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
@@ -226,7 +256,7 @@ if (isset($_GET['id'])) {
         .notif-btn{background:none;border:none;cursor:pointer;position:relative;padding:6px;color:#64748b;display:flex;align-items:center;border-radius:8px;transition:background .2s;}
         .notif-btn:hover{background:#f1f5f9;}
         .notif-badge{position:absolute;top:0;right:0;background:#ef4444;color:#fff;font-size:.62rem;font-weight:700;padding:2px 5px;border-radius:20px;min-width:18px;text-align:center;}
-        .notif-panel{position:absolute;right:0;top:calc(100% + 8px);width:300px;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.15);z-index:500;border:1px solid #e2e8f0;overflow:hidden;}
+        .notif-panel{position:fixed;right:16px;top:70px;width:320px;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.2);z-index:9999;border:1px solid #e2e8f0;overflow:hidden;}
         .notif-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:.85rem;font-weight:700;color:#0f172a;}
         .notif-lista{max-height:320px;overflow-y:auto;}
         .notif-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #f8fafc;cursor:pointer;transition:background .15s;}
@@ -366,7 +396,6 @@ if (isset($_GET['id'])) {
             <?php if ($historial): ?>
             <div class="det-seccion">Historial Crediticio</div>
             <?php
-            // STRATEGY: 3 algoritmos de evaluación según el score
             $score = $historial['score_crediticio'] ?? 0;
             $sc = $score >= 700 ? '#059669' : ($score >= 500 ? '#d97706' : '#dc2626');
             $sl = $score >= 700 ? 'Bueno' : ($score >= 500 ? 'Regular' : 'Bajo');
@@ -456,7 +485,7 @@ if (isset($_GET['id'])) {
             <!-- PEDIR DOCUMENTOS -->
             <div style="margin-top:14px;background:#fefce8;border:1.5px solid #fde047;border-radius:8px;padding:14px;">
                 <div style="font-size:.8rem;font-weight:700;color:#713f12;margin-bottom:10px;">Solicitar documentos al cliente</div>
-                <form action="../../controllers/DocumentoController.php" method="POST">
+                <form action="/cooperativa/controllers/DocumentoController.php" method="POST">
                     <input type="hidden" name="accion" value="pedir_documentos">
                     <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
                     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
@@ -471,8 +500,148 @@ if (isset($_GET['id'])) {
             </div>
             <?php elseif ($detalle['estado'] == 'aprobada_asesor'): ?>
             <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:14px;margin-top:16px;font-size:.85rem;color:#065f46;font-weight:600;text-align:center;">
-                Aprobada y enviada al jefe para revisión final.
+                Documentos verificados y enviados al administrador para aprobacion final.
             </div>
+
+            <?php elseif ($detalle['estado'] == 'aprobada'): ?>
+            <!-- FLUJO DE CONTRATO FASE 4 -->
+            <div style="margin-top:16px;">
+
+                <?php if (empty($detalle['contrato_firmado'])): ?>
+                <div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:14px;margin-bottom:12px;">
+                    <div style="font-size:.88rem;font-weight:700;color:#1d4ed8;margin-bottom:8px;">
+                        Solicitud aprobada — Proceso de firma del contrato
+                    </div>
+
+                    <!-- PASO 1: Ver contrato del admin -->
+                    <div style="font-size:.78rem;font-weight:700;color:#374151;margin-bottom:6px;">Paso 1: Ver e imprimir el contrato</div>
+                    <a href="../../views/admin/contrato.php?id=<?= $detalle['id'] ?>" target="_blank"
+                       style="display:block;text-align:center;padding:10px;background:#1d4ed8;color:#fff;border-radius:8px;font-size:.84rem;font-weight:700;text-decoration:none;margin-bottom:12px;">
+                       Ver / Imprimir Contrato del Admin
+                    </a>
+
+                    <!-- PASO 2: Enviar al cliente para firma digital -->
+                    <div style="font-size:.78rem;font-weight:700;color:#374151;margin-bottom:6px;">Paso 2: Enviar contrato al cliente para su firma digital</div>
+                    <?php if (!$detalle['contrato_enviado_cliente']): ?>
+                    <form method="POST" action="/cooperativa/controllers/DocumentoController.php" style="margin-bottom:12px;">
+                        <input type="hidden" name="accion" value="enviar_contrato_cliente">
+                        <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+                        <button type="submit"
+                                onclick="return confirm('¿Confirmas que presentaste el contrato al cliente y lo envias para su firma digital?')"
+                                style="width:100%;padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:.85rem;font-weight:700;cursor:pointer;">
+                            Enviar contrato al cliente para firma
+                        </button>
+                    </form>
+                    <?php else: ?>
+                    <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px;text-align:center;font-size:.82rem;color:#5b21b6;margin-bottom:12px;">
+                        Contrato enviado al cliente. Esperando su firma digital.
+                    </div>
+
+                    <!-- PASO 3: Subir contrato firmado por el cliente -->
+                    <div style="font-size:.78rem;font-weight:700;color:#374151;margin-bottom:6px;">Paso 3: Subir contrato firmado por el cliente</div>
+                    <form method="POST" action="/cooperativa/controllers/DocumentoController.php" enctype="multipart/form-data">
+                        <input type="hidden" name="accion" value="subir_contrato">
+                        <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+                        <div id="dropContrato" style="border:2px dashed #bfdbfe;border-radius:8px;padding:16px;text-align:center;background:#f8fafc;cursor:pointer;position:relative;margin-bottom:8px;">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="#3b82f6" stroke-width="1.5" style="width:32px;height:32px;margin:0 auto 6px;display:block;"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+                            <p style="font-size:.8rem;color:#1d4ed8;font-weight:600;margin-bottom:2px;">Arrastra el contrato firmado por el cliente</p>
+                            <p style="font-size:.72rem;color:#94a3b8;">Foto, scan o PDF — max 10MB</p>
+                            <input type="file" name="contrato" accept=".jpg,.jpeg,.png,.pdf" required
+                                   style="position:absolute;inset:0;opacity:0;cursor:pointer;"
+                                   onchange="mostrarPrevContrato(this)">
+                        </div>
+                        <div id="prevContrato" style="display:none;margin-bottom:8px;text-align:center;"></div>
+                        <button type="submit" style="width:100%;padding:10px;background:#059669;color:#fff;border:none;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;">
+                            Subir contrato firmado — Notificar al Admin
+                        </button>
+                    </form>
+                    <?php endif; ?>
+                </div>
+
+                <?php else: ?>
+                <!-- CONTRATO FIRMADO POR EL CLIENTE — PASO FINAL -->
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:14px;margin-bottom:12px;">
+                    <div style="font-size:.88rem;font-weight:700;color:#065f46;margin-bottom:4px;">
+                        Contrato firmado digitalmente por el cliente
+                    </div>
+                    <div style="font-size:.78rem;color:#64748b;margin-bottom:8px;">
+                        Firmado el <?= fechaCorta($detalle['fecha_firma']) ?>
+                    </div>
+                    <a href="/cooperativa/<?= $detalle['contrato_firmado'] ?>" target="_blank"
+                       style="display:inline-block;padding:6px 14px;background:#dbeafe;color:#1d4ed8;border-radius:6px;font-size:.78rem;font-weight:600;text-decoration:none;">
+                       Ver firma del cliente
+                    </a>
+                </div>
+
+                <?php if (!$detalle['listo_para_desembolso']): ?>
+                <!-- PASO: ENVIAR CONTRATO FIRMADO AL ADMIN + METODO DE DESEMBOLSO -->
+                <div style="background:#fef3c7;border:1.5px solid #fde68a;border-radius:8px;padding:14px;margin-bottom:12px;">
+                    <div style="font-size:.88rem;font-weight:700;color:#92400e;margin-bottom:8px;">
+                        Enviar contrato firmado al Administrador
+                    </div>
+                    <p style="font-size:.82rem;color:#64748b;line-height:1.6;margin-bottom:12px;">
+                        El cliente ya firmo el contrato. Selecciona como desea recibir su dinero y envia todo al administrador para que proceda con el desembolso.
+                    </p>
+                    <form method="POST" action="/cooperativa/controllers/DocumentoController.php">
+                        <input type="hidden" name="accion" value="registrar_metodo_desembolso">
+                        <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+
+                        <div style="margin-bottom:10px;">
+                            <label style="display:block;font-size:.8rem;font-weight:600;color:#374151;margin-bottom:5px;">
+                                Metodo de desembolso solicitado por el cliente:
+                            </label>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;border:1.5px solid #e2e8f0;border-radius:8px;cursor:pointer;font-size:.84rem;flex:1;">
+                                    <input type="radio" name="metodo_desembolso" value="caja" required
+                                           onchange="toggleCuenta(false)"> Retiro por Caja
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;border:1.5px solid #e2e8f0;border-radius:8px;cursor:pointer;font-size:.84rem;flex:1;">
+                                    <input type="radio" name="metodo_desembolso" value="transferencia"
+                                           onchange="toggleCuenta(true)"> Transferencia Bancaria
+                                </label>
+                            </div>
+                        </div>
+                            </div>
+                        </div>
+
+                        <div id="datosTransferencia" style="display:none;margin-bottom:10px;">
+                            <div style="margin-bottom:8px;">
+                                <label style="display:block;font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;">Banco</label>
+                                <input type="text" name="banco_desembolso" placeholder="Ej: BCP, Interbank, BBVA..."
+                                       style="width:100%;padding:8px 12px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;">
+                            </div>
+                            <div>
+                                <label style="display:block;font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;">Numero de cuenta</label>
+                                <input type="text" name="cuenta_desembolso" placeholder="Ej: 194-123456789-0-12"
+                                       style="width:100%;padding:8px 12px;border:1.5px solid #d1d5db;border-radius:6px;font-size:.85rem;">
+                            </div>
+                        </div>
+
+                        <button type="submit"
+                                onclick="return confirm('¿Confirmas que envias el contrato firmado y el metodo de desembolso al administrador?')"
+                                style="width:100%;padding:12px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;">
+                            Enviar contrato firmado al Admin — Solicitar Desembolso
+                        </button>
+                    </form>
+                </div>
+
+                <?php else: ?>
+                <!-- YA ENVIADO AL ADMIN -->
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px;text-align:center;">
+                    <div style="font-size:.88rem;font-weight:700;color:#065f46;margin-bottom:4px;">
+                        Enviado al administrador para desembolso
+                    </div>
+                    <div style="font-size:.78rem;color:#64748b;">
+                        Metodo: <?= $detalle['metodo_desembolso'] == 'caja' ? 'Retiro por caja' : 'Transferencia bancaria' ?>
+                        <?php if ($detalle['banco_desembolso']): ?>
+                        — <?= htmlspecialchars($detalle['banco_desembolso']) ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+                <?php endif; ?>
+            </div>
+
             <?php elseif ($detalle['estado'] == 'rechazada_asesor'): ?>
             <div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;padding:14px;margin-top:16px;font-size:.85rem;color:#991b1b;">
                 <strong>Rechazada.</strong> Motivo: <?= htmlspecialchars($detalle['motivo_rechazo']??'—') ?>
@@ -480,25 +649,61 @@ if (isset($_GET['id'])) {
             <?php endif; ?>
 
             <!-- DOCUMENTOS SUBIDOS POR EL CLIENTE -->
-            <?php if (!empty($documentos)): ?>
             <div style="margin-top:14px;">
-                <div style="font-size:.78rem;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Documentos del cliente</div>
-                <?php
-                $tipos_doc=['dni'=>'DNI','recibo_ingreso'=>'Boleta/Ingreso','recibo_servicio'=>'Recibo Servicios','otro'=>'Otro'];
-                foreach ($documentos as $doc): ?>
-                <div style="display:flex;align-items:center;gap:10px;padding:9px;background:#f8fafc;border-radius:8px;margin-bottom:6px;border:1px solid #e2e8f0;">
-                    <div style="width:32px;height:32px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                        <svg fill="none" viewBox="0 0 24 24" stroke="#1d4ed8" stroke-width="2" style="width:16px;height:16px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                    </div>
-                    <div style="flex:1;">
-                        <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($doc['nombre_archivo']) ?></div>
-                        <div style="font-size:.72rem;color:#64748b;"><?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?></div>
-                    </div>
-                    <a href="../../<?= $doc['ruta'] ?>" target="_blank" style="background:#dbeafe;color:#1e40af;padding:4px 10px;border-radius:6px;font-size:.75rem;font-weight:600;text-decoration:none;">Ver</a>
+                <div style="font-size:.78rem;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px;">
+                    Documentos del cliente (<?= count($documentos) ?>)
                 </div>
-                <?php endforeach; ?>
+
+                <?php if (empty($documentos)): ?>
+                <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px;font-size:.82rem;color:#92400e;text-align:center;">
+                    El cliente aun no ha subido documentos. Puedes solicitarselos por el chat.
+                </div>
+                <?php else: ?>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:14px;">
+                    <?php
+                    $tipos_doc=['dni'=>'DNI','recibo_ingreso'=>'Boleta/Ingreso','recibo_servicio'=>'Recibo Servicios','otro'=>'Otro'];
+                    foreach ($documentos as $doc):
+                        $ext_doc = strtolower(pathinfo($doc['nombre_archivo'], PATHINFO_EXTENSION));
+                        $es_img  = in_array($ext_doc, ['jpg','jpeg','png','webp']);
+                    ?>
+                    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+                        <?php if ($es_img): ?>
+                        <a href="../../<?= $doc['ruta'] ?>" target="_blank">
+                            <img src="../../<?= $doc['ruta'] ?>" alt="<?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?>"
+                                 style="width:100%;height:90px;object-fit:cover;display:block;">
+                        </a>
+                        <?php else: ?>
+                        <a href="../../<?= $doc['ruta'] ?>" target="_blank"
+                           style="display:flex;align-items:center;justify-content:center;height:90px;background:#fff5f5;text-decoration:none;">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="#ef4444" stroke-width="1.5" style="width:36px;height:36px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        </a>
+                        <?php endif; ?>
+                        <div style="padding:6px 8px;">
+                            <div style="font-size:.72rem;font-weight:700;color:#0f172a;"><?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?></div>
+                            <div style="font-size:.65rem;color:#94a3b8;"><?= fechaCorta($doc['subido_en']) ?></div>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+
+                <?php if (in_array($detalle['estado'], ['pendiente','en_evaluacion'])): ?>
+                <!-- BOTON: TODO EN ORDEN - ENVIAR AL ADMIN -->
+                <form method="POST" action="/cooperativa/controllers/DocumentoController.php">
+                    <input type="hidden" name="accion" value="aprobar_y_enviar_admin">
+                    <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+                    <button type="submit"
+                            onclick="return confirm('¿Confirmas que los documentos estan en orden y deseas enviar al administrador?')"
+                            style="width:100%;padding:12px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;margin-bottom:8px;">
+                        Todo en orden — Enviar al Administrador
+                    </button>
+                </form>
+                <?php elseif ($detalle['estado'] == 'aprobada_asesor'): ?>
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:10px;text-align:center;font-size:.84rem;color:#065f46;font-weight:600;">
+                    Documentos verificados y enviados al administrador
+                </div>
+                <?php endif; ?>
+                <?php endif; ?>
             </div>
-            <?php endif; ?>
 
             <!-- CHAT CON EL CLIENTE -->
             <div style="margin-top:14px;">
@@ -513,7 +718,7 @@ if (isset($_GET['id'])) {
                     <?php endforeach; ?>
                 </div>
                 <?php endif; ?>
-                <form action="../../controllers/DocumentoController.php" method="POST" style="display:flex;gap:8px;">
+                <form action="/cooperativa/controllers/DocumentoController.php" method="POST" style="display:flex;gap:8px;">
                     <input type="hidden" name="accion" value="enviar_mensaje">
                     <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
                     <input type="text" name="mensaje" placeholder="Escribe al cliente..." required style="flex:1;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;outline:none;">
@@ -548,6 +753,26 @@ if (isset($_GET['id'])) {
 <script>
 function abrirMenu(){document.getElementById('sidebar').classList.add('abierto');document.getElementById('overlay').classList.add('show');}
 function cerrarMenu(){document.getElementById('sidebar').classList.remove('abierto');document.getElementById('overlay').classList.remove('show');}
+function toggleCuenta(mostrar){
+    var d = document.getElementById('datosTransferencia');
+    if(d) d.style.display = mostrar ? 'block' : 'none';
+}
+function mostrarPrevContrato(input){
+    var prev = document.getElementById('prevContrato');
+    if(!prev || !input.files[0]) return;
+    var f = input.files[0];
+    if(f.type.startsWith('image/')){
+        var r = new FileReader();
+        r.onload = function(e){
+            prev.innerHTML = '<img src="'+e.target.result+'" style="max-width:100%;border-radius:8px;border:1px solid #e2e8f0;">';
+            prev.style.display = 'block';
+        };
+        r.readAsDataURL(f);
+    } else {
+        prev.innerHTML = '<div style="padding:10px;background:#fff5f5;border-radius:8px;font-size:.82rem;color:#dc2626;">PDF seleccionado: '+f.name+'</div>';
+        prev.style.display = 'block';
+    }
+}
 function mostrarRechazar(id, codigo){
     document.getElementById('modal-sid').value=id;
     document.getElementById('modal-txt').textContent='Solicitud: '+codigo;

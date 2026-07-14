@@ -9,7 +9,7 @@ $nombre   = $_SESSION['nombres'];
 $apellido = $_SESSION['apellidos'];
 $admin_id = $_SESSION['usuario_id'];
 $base     = getBase();
-//OBSERVER
+
 // Procesar desembolso
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'desembolsar') {
     $sid     = intval($_POST['solicitud_id']);
@@ -17,16 +17,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'desembols
     $cuenta  = limpiar($_POST['numero_cuenta'] ?? '');
     $banco   = limpiar($_POST['banco'] ?? '');
 
-    // Obtener datos de la solicitud
-    $sol = $conn->query("SELECT * FROM solicitudes WHERE id=$sid AND estado='aprobada'")->fetch_assoc();
+    // Obtener datos completos de la solicitud
+    $sol = $conn->query(
+        "SELECT s.*, CONCAT(u.nombres,' ',u.apellidos) AS cliente_nombre, u.correo AS cliente_correo
+         FROM solicitudes s
+         JOIN usuarios u ON s.cliente_id=u.id
+         WHERE s.id=$sid AND s.estado='aprobada'"
+    )->fetch_assoc();
 
     if (!$sol) {
-        setMensaje("Solicitud no válida para desembolso.", "error");
+        setMensaje("Solicitud no valida para desembolso.", "error");
         header("Location: desembolsos.php");
         exit;
     }
 
-    // Registrar desembolso
+    // REACCION 1: Registrar desembolso
     $stmt = $conn->prepare(
         "INSERT INTO desembolsos (solicitud_id, admin_id, monto, metodo, numero_cuenta, banco)
          VALUES (?, ?, ?, ?, ?, ?)"
@@ -34,10 +39,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'desembols
     $stmt->bind_param("iidsss", $sid, $admin_id, $sol['monto_solicitado'], $metodo, $cuenta, $banco);
     $stmt->execute();
 
-    // Actualizar estado de la solicitud
+    // REACCION 2: Actualizar estado de la solicitud
     $conn->query("UPDATE solicitudes SET estado='desembolsada', fecha_desembolso=NOW() WHERE id=$sid");
 
-    // Crear cartera de préstamos
+    // REACCION 3: Crear cartera de prestamos
     $inicio = date('Y-m-d');
     $fin    = date('Y-m-d', strtotime("+{$sol['plazo_meses']} months"));
     $stmt2  = $conn->prepare(
@@ -48,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'desembols
     $stmt2->execute();
     $cartera_id = $conn->insert_id;
 
-    // Generar cuotas automáticamente
+    // REACCION 4: Generar cuotas automaticamente (Programacion Reactiva)
     for ($i = 1; $i <= $sol['plazo_meses']; $i++) {
         $venc  = date('Y-m-d', strtotime("+$i months", strtotime($inicio)));
         $cuota = $sol['cuota_estimada'];
@@ -60,16 +65,33 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && ($_POST['accion']??'') == 'desembols
         $ins->execute();
     }
 
-    // Notificar al cliente
-    $msg = "Tu préstamo {$sol['codigo']} ha sido desembolsado. Ya puedes ver tus cuotas en Mis Pagos.";
-    $notif = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Préstamo Desembolsado', ?, 'exito')");
-    $notif->bind_param("is", $sol['cliente_id'], $msg);
+    // Descripcion del metodo de desembolso
+    $desc_metodo = $metodo == 'efectivo' ? 'Retiro por Caja en nuestras oficinas'
+                 : ($metodo == 'cheque'  ? 'Cheque'
+                 : "Transferencia bancaria a {$banco} — Cuenta: {$cuenta}");
+
+    // REACCION 5: Notificar al CLIENTE con todos los detalles
+    $msg_cliente = "Tu prestamo {$sol['codigo']} por " . soles($sol['monto_solicitado']) . " ha sido desembolsado exitosamente. Metodo: {$desc_metodo}. Se generaron {$sol['plazo_meses']} cuotas mensuales de " . soles($sol['cuota_estimada']) . " cada una. Revisa tu cronograma en 'Mis Pagos'.";
+    $notif = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Prestamo Desembolsado', ?, 'exito')");
+    $notif->bind_param("is", $sol['cliente_id'], $msg_cliente);
     $notif->execute();
 
-    // Log
-    $conn->query("INSERT INTO auditoria_logs (usuario_id, accion, tabla_afectada, registro_id) VALUES ($admin_id, 'desembolso', 'desembolsos', $sid)");
+    // REACCION 6: Notificar al ASESOR
+    $msg_asesor = "El prestamo {$sol['codigo']} de {$sol['cliente_nombre']} fue desembolsado exitosamente. Metodo: {$desc_metodo}. El cliente puede ver sus cuotas en el sistema.";
+    $na = $conn->prepare("INSERT INTO notificaciones (usuario_id, titulo, mensaje, tipo) VALUES (?, 'Desembolso completado', ?, 'exito')");
+    $na->bind_param("is", $sol['asesor_id'], $msg_asesor);
+    $na->execute();
 
-    setMensaje("Desembolso realizado correctamente. Se generaron {$sol['plazo_meses']} cuotas.", "exito");
+    // REACCION 7: Mensaje automatico en el chat al cliente
+    $msg_chat = "Tu prestamo fue desembolsado exitosamente. {$desc_metodo}. Ya puedes ver tu cronograma completo de {$sol['plazo_meses']} cuotas en 'Mis Pagos'. Si tienes alguna consulta, no dudes en escribirme.";
+    $mc = $conn->prepare("INSERT INTO mensajes_solicitud (solicitud_id, usuario_id, mensaje, tipo) VALUES (?, ?, ?, 'asesor')");
+    $mc->bind_param("iis", $sid, $sol['asesor_id'], $msg_chat);
+    $mc->execute();
+
+    // Log de auditoria
+    $conn->query("INSERT INTO auditoria_logs (usuario_id, accion, tabla_afectada, registro_id) VALUES ($admin_id, 'desembolso_completado', 'desembolsos', $sid)");
+
+    setMensaje("Desembolso realizado correctamente. Se generaron {$sol['plazo_meses']} cuotas. Cliente y asesor notificados.", "exito");
     header("Location: desembolsos.php");
     exit;
 }
@@ -137,8 +159,8 @@ if (isset($_GET['id'])) {
         .uchip .ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#d97706);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.72rem;font-weight:700;}
         .uchip span{font-size:.83rem;font-weight:600;color:#92400e;}
         .contenido{margin-left:260px;margin-top:62px;padding:24px;}
-        .menu-btn{display:none;background:none;border:none;cursor:pointer;color:#64748b;padding:4px;}
-        .menu-btn svg{width:22px;height:22px;}
+        .menu-btn{display:none;background:#1d4ed8;border:none;cursor:pointer;color:#fff;padding:8px 14px;border-radius:8px;font-size:.8rem;font-weight:700;align-items:center;gap:6px;}
+        .menu-btn svg{width:20px;height:20px;}
         .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99;}
         .overlay.show{display:block;}
 
@@ -189,6 +211,48 @@ if (isset($_GET['id'])) {
             .menu-btn{display:flex !important;}
             .grid2{grid-template-columns:1fr;}
         }
+
+        /* BOTÓN CERRAR SESIÓN FIJO EN MÓVIL */
+        .btn-logout-movil{
+            display:none;
+            position:fixed;
+            bottom:16px; right:16px;
+            background:#ef4444;
+            color:#fff;
+            border:none;
+            border-radius:50px;
+            padding:12px 20px;
+            font-size:.85rem;
+            font-weight:700;
+            cursor:pointer;
+            z-index:150;
+            box-shadow:0 4px 12px rgba(239,68,68,.4);
+            text-decoration:none;
+            align-items:center;
+            gap:8px;
+        }
+        .btn-logout-movil svg{width:16px;height:16px;}
+        @media(max-width:768px){
+            .btn-logout-movil{display:flex;}
+        }
+
+        /* CAMPANITA */
+        .notif-wrap{position:relative;}
+        .notif-btn{background:none;border:none;cursor:pointer;position:relative;padding:6px;color:#64748b;display:flex;align-items:center;border-radius:8px;transition:background .2s;}
+        .notif-btn:hover{background:#f1f5f9;}
+        .notif-badge{position:absolute;top:0;right:0;background:#ef4444;color:#fff;font-size:.62rem;font-weight:700;padding:2px 5px;border-radius:20px;min-width:18px;text-align:center;}
+        .notif-panel{position:fixed;right:16px;top:70px;width:320px;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.2);z-index:9999;border:1px solid #e2e8f0;overflow:hidden;}
+        .notif-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:.85rem;font-weight:700;color:#0f172a;}
+        .notif-lista{max-height:320px;overflow-y:auto;}
+        .notif-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #f8fafc;cursor:pointer;transition:background .15s;}
+        .notif-item:hover{background:#f8fafc;}
+        .notif-item.no-leida{background:#eff6ff;}
+        .notif-ico{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.95rem;}
+        .notif-ico.exito{background:#d1fae5;}.notif-ico.error{background:#fee2e2;}.notif-ico.info{background:#dbeafe;}.notif-ico.advertencia{background:#fef3c7;}
+        .notif-titulo{font-size:.8rem;font-weight:700;color:#0f172a;margin-bottom:2px;}
+        .notif-msg{font-size:.74rem;color:#64748b;line-height:1.4;}
+        .notif-hora{font-size:.67rem;color:#94a3b8;margin-top:3px;}
+        @media(max-width:480px){.notif-panel{width:260px;right:-40px;}}
     </style>
 </head>
 <body>
@@ -229,7 +293,22 @@ if (isset($_GET['id'])) {
         <button class="menu-btn" onclick="abrirMenu()"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h1>Desembolsos</h1>
     </div>
-    <div class="uchip">
+    
+<!-- CAMPANITA NOTIFICACIONES -->
+<div class="notif-wrap" id="notifWrap">
+    <button class="notif-btn" onclick="toggleNotif()" title="Notificaciones">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+        <span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+    </button>
+    <div class="notif-panel" id="notifPanel" style="display:none;">
+        <div class="notif-header">
+            <span>Notificaciones</span>
+            <button onclick="leerTodas()" style="font-size:.72rem;color:#3b82f6;background:none;border:none;cursor:pointer;font-weight:600;">Leídas</button>
+        </div>
+        <div id="notifLista"><div style="text-align:center;padding:20px;color:#94a3b8;font-size:.82rem;">Cargando...</div></div>
+    </div>
+</div>
+        <div class="uchip">
         <div class="ava"><?= strtoupper(substr($nombre,0,1)) ?></div>
         <span><?= htmlspecialchars($nombre) ?></span>
     </div>
@@ -285,31 +364,89 @@ if (isset($_GET['id'])) {
 
             <div class="monto-grande"><?= soles($detalle['monto_solicitado']) ?></div>
 
+            <?php if (empty($detalle['contrato_firmado'])): ?>
+            <!-- CONTRATO AUN NO FIRMADO -->
+            <div style="background:#fef3c7;border:2px solid #fde068;border-radius:10px;padding:18px;margin-bottom:14px;text-align:center;">
+                <div style="font-size:1.1rem;margin-bottom:6px;">Contrato pendiente de firma del cliente</div>
+                <p style="font-size:.85rem;color:#92400e;margin-bottom:14px;line-height:1.6;">
+                    El asesor aun no ha enviado el contrato firmado por el cliente. No se puede desembolsar hasta que el cliente firme.
+                </p>
+                <a href="contrato.php?id=<?= $detalle['id'] ?>" target="_blank"
+                   style="display:inline-block;padding:10px 20px;background:#1d4ed8;color:#fff;border-radius:8px;font-size:.88rem;font-weight:700;text-decoration:none;">
+                   Ver Contrato
+                </a>
+            </div>
+
+            <?php else: ?>
+            <!-- CONTRATO FIRMADO POR EL CLIENTE -->
+            <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:14px;margin-bottom:14px;">
+                <div style="font-size:.88rem;font-weight:700;color:#065f46;margin-bottom:8px;">
+                    Contrato firmado digitalmente por el cliente
+                </div>
+                <div style="font-size:.78rem;color:#64748b;margin-bottom:10px;">
+                    Firmado el <?= fechaCorta($detalle['fecha_firma']) ?>
+                    <?php if ($detalle['metodo_desembolso']): ?>
+                    — Metodo: <strong><?= $detalle['metodo_desembolso']=='caja'?'Retiro por Caja':'Transferencia Bancaria' ?></strong>
+                    <?php if ($detalle['banco_desembolso']): ?> — <?= htmlspecialchars($detalle['banco_desembolso']) ?><?php endif; ?>
+                    <?php endif; ?>
+                </div>
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px;text-align:center;margin-bottom:10px;">
+                    <div style="font-size:.75rem;color:#64748b;margin-bottom:6px;">Firma digital del cliente:</div>
+                    <img src="/cooperativa/<?= $detalle['contrato_firmado'] ?>"
+                         alt="Firma del cliente"
+                         style="max-width:100%;max-height:120px;border-radius:6px;"
+                         onerror="this.style.display='none'">
+                </div>
+                <a href="/cooperativa/<?= $detalle['contrato_firmado'] ?>" target="_blank"
+                   style="display:inline-block;padding:6px 14px;background:#dbeafe;color:#1d4ed8;border-radius:6px;font-size:.78rem;font-weight:600;text-decoration:none;">
+                   Ver firma completa
+                </a>
+            </div>
+
+            <!-- FORMULARIO DE DESEMBOLSO -->
             <form method="POST" onsubmit="return confirm('¿Confirmar desembolso de <?= soles($detalle['monto_solicitado']) ?> a <?= htmlspecialchars($detalle['cliente']) ?>?')">
                 <input type="hidden" name="accion" value="desembolsar">
                 <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
 
+                <?php if (!empty($detalle['metodo_desembolso'])): ?>
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px;margin-bottom:14px;">
+                    <div style="font-size:.8rem;font-weight:700;color:#065f46;margin-bottom:4px;">Metodo solicitado por el cliente:</div>
+                    <div style="font-size:.88rem;color:#1e293b;font-weight:600;">
+                        <?= $detalle['metodo_desembolso'] == 'caja' ? 'Retiro por Caja' : 'Transferencia Bancaria' ?>
+                        <?php if ($detalle['banco_desembolso']): ?> — <?= htmlspecialchars($detalle['banco_desembolso']) ?><?php endif; ?>
+                        <?php if ($detalle['cuenta_desembolso']): ?>
+                        <br><span style="font-size:.8rem;color:#64748b;">Cuenta: <?= htmlspecialchars($detalle['cuenta_desembolso']) ?></span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <div class="form-grupo">
-                    <label>Método de pago *</label>
+                    <label>Metodo de pago *</label>
                     <select name="metodo" required>
-                        <option value="transferencia">Transferencia bancaria</option>
-                        <option value="efectivo">Efectivo en oficina</option>
+                        <option value="transferencia" <?= ($detalle['metodo_desembolso']??'')==='transferencia'?'selected':'' ?>>Transferencia bancaria</option>
+                        <option value="efectivo" <?= ($detalle['metodo_desembolso']??'')==='caja'?'selected':'' ?>>Efectivo en oficina (Caja)</option>
                         <option value="cheque">Cheque</option>
                     </select>
                 </div>
                 <div class="form-grupo">
-                    <label>Número de cuenta (si aplica)</label>
-                    <input type="text" name="numero_cuenta" placeholder="Ej: 123-456789-0-12">
+                    <label>Numero de cuenta (si aplica)</label>
+                    <input type="text" name="numero_cuenta"
+                           value="<?= htmlspecialchars($detalle['cuenta_desembolso']??'') ?>"
+                           placeholder="Ej: 123-456789-0-12">
                 </div>
                 <div class="form-grupo">
                     <label>Banco (si aplica)</label>
-                    <input type="text" name="banco" placeholder="Ej: BCP, Interbank, BBVA...">
+                    <input type="text" name="banco"
+                           value="<?= htmlspecialchars($detalle['banco_desembolso']??'') ?>"
+                           placeholder="Ej: BCP, Interbank, BBVA...">
                 </div>
 
                 <button type="submit" class="btn-desembolsar">
                     Confirmar Desembolso
                 </button>
             </form>
+            <?php endif; ?>
             <?php endif; ?>
         </div>
     </div>
@@ -345,5 +482,13 @@ if (isset($_GET['id'])) {
 function abrirMenu(){document.getElementById('sidebar').classList.add('open');document.getElementById('overlay').classList.add('show');}
 function cerrarMenu(){document.getElementById('sidebar').classList.remove('open');document.getElementById('overlay').classList.remove('show');}
 </script>
+
+<!-- BOTÓN CERRAR SESIÓN MÓVIL -->
+<a href="../../controllers/AuthController.php?accion=logout" class="btn-logout-movil">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+    </svg>
+    Cerrar Sesión
+</a>
 </body>
 </html>

@@ -305,7 +305,7 @@ if (isset($_GET['id'])) {
                 <p style="font-size:.84rem;color:#94a3b8;text-align:center;padding:16px 0;">No hay mensajes aún.</p>
                 <?php endif; ?>
 
-                <form action="../../controllers/DocumentoController.php" method="POST">
+                <form action="/cooperativa/controllers/DocumentoController.php" method="POST">
                     <input type="hidden" name="accion" value="enviar_mensaje">
                     <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
                     <div class="form-grupo">
@@ -315,44 +315,115 @@ if (isset($_GET['id'])) {
                 </form>
             </div>
 
+            <!-- CONTRATO PARA FIRMAR -->
+            <?php if ($detalle['estado'] == 'aprobada'): ?>
+            <div class="card" style="border:2px solid #7c3aed;">
+                <div class="card-title" style="color:#7c3aed;">Contrato de Prestamo</div>
+
+                <?php if (!empty($detalle['contrato_firmado'])): ?>
+                <!-- YA FIRMO -->
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:14px;text-align:center;">
+                    <div style="font-size:.9rem;font-weight:700;color:#065f46;margin-bottom:4px;">Ya firmaste el contrato</div>
+                    <div style="font-size:.8rem;color:#64748b;">Firmado el <?= fechaCorta($detalle['fecha_firma']) ?></div>
+                    <div style="font-size:.8rem;color:#64748b;margin-top:6px;">El asesor esta procesando tu solicitud de desembolso.</div>
+                </div>
+
+                <?php elseif ($detalle['contrato_enviado_cliente']): ?>
+                <!-- ASESOR ENVIO — PUEDE FIRMAR -->
+                <p style="font-size:.85rem;color:#64748b;line-height:1.7;margin-bottom:16px;">
+                    Tu solicitud fue aprobada. Lee el contrato y si estas de acuerdo firma digitalmente abajo.
+                </p>
+                <a href="/cooperativa/views/admin/contrato.php?id=<?= $detalle['id'] ?>" target="_blank"
+                   style="display:block;text-align:center;padding:11px;background:#1d4ed8;color:#fff;border-radius:8px;font-size:.88rem;font-weight:700;text-decoration:none;margin-bottom:16px;">
+                   Ver mi Contrato de Prestamo
+                </a>
+                <div style="font-size:.82rem;font-weight:700;color:#374151;margin-bottom:8px;">
+                    Dibuja tu firma con el dedo o mouse:
+                </div>
+                <canvas id="firmaCanvas"
+                        style="border:2px solid #7c3aed;border-radius:8px;width:100%;height:120px;background:#fff;cursor:crosshair;touch-action:none;"></canvas>
+                <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:14px;">
+                    <button type="button" onclick="limpiarFirma()"
+                            style="flex:1;padding:8px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:.8rem;cursor:pointer;">
+                        Limpiar firma
+                    </button>
+                </div>
+                <form method="POST" enctype="multipart/form-data" id="formFirma" action="/cooperativa/controllers/DocumentoController.php">
+                    <input type="hidden" name="accion" value="firmar_contrato_cliente">
+                    <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
+                    <input type="hidden" name="firma_data" id="firmaData">
+                    <button type="button" onclick="enviarFirma()"
+                            style="width:100%;padding:12px;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:8px;font-size:.92rem;font-weight:700;cursor:pointer;">
+                        Confirmar y Enviar mi Firma
+                    </button>
+                </form>
+
+                <?php else: ?>
+                <!-- ESPERANDO QUE EL ASESOR ENVIE -->
+                <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:14px;text-align:center;">
+                    <div style="font-size:.88rem;font-weight:700;color:#92400e;margin-bottom:6px;">Tu solicitud fue aprobada</div>
+                    <p style="font-size:.82rem;color:#92400e;line-height:1.6;">
+                        El administrador esta preparando tu contrato. El asesor te lo enviara pronto para que puedas firmarlo.
+                    </p>
+                    <a href="/cooperativa/views/admin/contrato.php?id=<?= $detalle['id'] ?>" target="_blank"
+                       style="display:inline-block;margin-top:10px;padding:8px 18px;background:#1d4ed8;color:#fff;border-radius:8px;font-size:.82rem;font-weight:700;text-decoration:none;">
+                       Ver borrador del contrato
+                    </a>
+                </div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
             <!-- DOCUMENTOS -->
             <?php if (in_array($detalle['estado'], ['en_evaluacion','pendiente','aprobada_asesor'])): ?>
             <div class="card">
                 <div class="card-title">Documentos Requeridos</div>
 
                 <div class="alerta-docs">
-                    <strong>El asesor puede solicitar documentos.</strong> Sube tu DNI, recibos de servicios o boletas de pago para agilizar tu evaluación.
+                    <strong>Sube tus documentos para que el asesor pueda verificarlos.</strong> Puedes subir varios a la vez arrastrándolos al área de carga.
                 </div>
 
                 <!-- DOCUMENTOS YA SUBIDOS -->
                 <?php if (!empty($documentos)): ?>
                 <div style="margin-bottom:14px;">
-                    <div style="font-size:.78rem;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Documentos subidos</div>
+                    <div style="font-size:.78rem;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Documentos subidos (<?= count($documentos) ?>)</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;">
                     <?php
                     $tipos_doc = ['dni'=>'DNI','recibo_ingreso'=>'Boleta/Ingreso','recibo_servicio'=>'Recibo Servicios','otro'=>'Otro'];
-                    foreach ($documentos as $doc): ?>
-                    <div class="doc-item">
-                        <div class="doc-icono">
-                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    foreach ($documentos as $doc):
+                        $ext = strtolower(pathinfo($doc['nombre_archivo'], PATHINFO_EXTENSION));
+                        $es_imagen = in_array($ext, ['jpg','jpeg','png','webp']);
+                    ?>
+                    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+                        <?php if ($es_imagen): ?>
+                        <a href="../../<?= $doc['ruta'] ?>" target="_blank">
+                            <img src="../../<?= $doc['ruta'] ?>" alt="<?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?>"
+                                 style="width:100%;height:100px;object-fit:cover;display:block;">
+                        </a>
+                        <?php else: ?>
+                        <a href="../../<?= $doc['ruta'] ?>" target="_blank"
+                           style="display:flex;align-items:center;justify-content:center;height:100px;background:#f1f5f9;text-decoration:none;">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="#ef4444" stroke-width="1.5" style="width:40px;height:40px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        </a>
+                        <?php endif; ?>
+                        <div style="padding:6px 8px;">
+                            <div style="font-size:.72rem;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?></div>
+                            <div style="font-size:.66rem;color:#94a3b8;"><?= fechaCorta($doc['subido_en']) ?></div>
                         </div>
-                        <div class="doc-info">
-                            <div class="nombre"><?= htmlspecialchars($doc['nombre_archivo']) ?></div>
-                            <div class="tipo"><?= $tipos_doc[$doc['tipo']]??$doc['tipo'] ?> — <?= fechaCorta($doc['subido_en']) ?></div>
-                        </div>
-                        <span style="margin-left:auto;background:#d1fae5;color:#065f46;font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:20px;">Subido</span>
                     </div>
                     <?php endforeach; ?>
+                    </div>
                 </div>
                 <?php endif; ?>
 
-                <!-- SUBIR DOCUMENTO -->
-                <form action="../../controllers/DocumentoController.php" method="POST" enctype="multipart/form-data" id="formDoc">
+                <!-- SUBIR DOCUMENTOS CON DRAG & DROP -->
+                <form action="/cooperativa/controllers/DocumentoController.php" method="POST" enctype="multipart/form-data" id="formDoc">
                     <input type="hidden" name="accion" value="subir_documento">
                     <input type="hidden" name="solicitud_id" value="<?= $detalle['id'] ?>">
 
                     <div class="form-grupo">
                         <label>Tipo de documento *</label>
-                        <select name="tipo" required>
+                        <select name="tipo" required id="tipoDoc">
                             <option value="">— Elige el tipo —</option>
                             <option value="dni">DNI (ambas caras)</option>
                             <option value="recibo_ingreso">Boleta de pago / Constancia de ingresos</option>
@@ -361,23 +432,27 @@ if (isset($_GET['id'])) {
                         </select>
                     </div>
 
-                    <div class="form-grupo">
-                        <label>Archivo (JPG, PNG o PDF, máx 5MB) *</label>
-                        <label for="archivoInput" class="upload-area" style="cursor:pointer;display:block;">
-                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" style="width:36px;height:36px;color:#94a3b8;margin:0 auto 8px;display:block;"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
-                            <p id="nombreArchivo" style="font-size:.84rem;color:#64748b;text-align:center;">Toca aquí para seleccionar archivo</p>
-                            <p style="font-size:.74rem;color:#94a3b8;text-align:center;margin-top:4px;"><strong>JPG, PNG o PDF</strong> — máx 5MB</p>
-                            <input type="file" id="archivoInput" name="archivo"
-                                   accept=".jpg,.jpeg,.png,.pdf"
-                                   style="display:none;"
-                                   onchange="document.getElementById('nombreArchivo').textContent = this.files[0].name"
-                                   required>
-                        </label>
+                    <!-- ZONA DRAG & DROP -->
+                    <div id="dropZone" style="border:2px dashed #93c5fd;border-radius:12px;padding:28px 16px;text-align:center;background:#eff6ff;transition:all .2s;cursor:pointer;margin-bottom:12px;position:relative;">
+                        <svg fill="none" viewBox="0 0 24 24" stroke="#3b82f6" stroke-width="1.5" style="width:40px;height:40px;margin:0 auto 10px;display:block;"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+                        <p style="font-size:.88rem;color:#1d4ed8;font-weight:600;margin-bottom:4px;">Arrastra tus archivos aqui</p>
+                        <p style="font-size:.78rem;color:#64748b;">o haz clic para seleccionar</p>
+                        <p style="font-size:.72rem;color:#94a3b8;margin-top:6px;">JPG, PNG o PDF — maximos 5MB cada uno</p>
+                        <input type="file" id="archivoInput" name="archivos[]"
+                               accept="image/*,.pdf"
+                               multiple
+                               style="position:absolute;inset:0;opacity:0;cursor:pointer;">
                     </div>
 
-                    <button type="submit" class="btn-subir">Subir Documento</button>
+                    <!-- VISTA PREVIA -->
+                    <div id="previews" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:12px;"></div>
+
+                    <button type="submit" class="btn-subir" id="btnSubir" style="display:none;">
+                        Subir documentos seleccionados
+                    </button>
                 </form>
             </div>
+
             <?php endif; ?>
 
             <?php endif; ?>
@@ -388,6 +463,129 @@ if (isset($_GET['id'])) {
 <script>
 function abrirMenu(){document.getElementById('sidebar').classList.add('open');document.getElementById('overlay').classList.add('show');}
 function cerrarMenu(){document.getElementById('sidebar').classList.remove('open');document.getElementById('overlay').classList.remove('show');}
+
+// ===== CANVAS DE FIRMA DIGITAL =====
+var canvas = document.getElementById('firmaCanvas');
+if (canvas) {
+    var ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = 120;
+    ctx.strokeStyle = '#1d4ed8';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    var dibujando = false;
+
+    function getPos(e) {
+        var rect = canvas.getBoundingClientRect();
+        var scaleX = canvas.width / rect.width;
+        var scaleY = canvas.height / rect.height;
+        if (e.touches) {
+            return {
+                x: (e.touches[0].clientX - rect.left) * scaleX,
+                y: (e.touches[0].clientY - rect.top) * scaleY
+            };
+        }
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    }
+
+    canvas.addEventListener('mousedown', function(e){ dibujando=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); });
+    canvas.addEventListener('mousemove', function(e){ if(!dibujando) return; var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); });
+    canvas.addEventListener('mouseup', function(){ dibujando=false; });
+    canvas.addEventListener('mouseleave', function(){ dibujando=false; });
+
+    canvas.addEventListener('touchstart', function(e){ e.preventDefault(); dibujando=true; ctx.beginPath(); var p=getPos(e); ctx.moveTo(p.x,p.y); });
+    canvas.addEventListener('touchmove', function(e){ e.preventDefault(); if(!dibujando) return; var p=getPos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); });
+    canvas.addEventListener('touchend', function(){ dibujando=false; });
+}
+
+function limpiarFirma() {
+    if (canvas) { ctx.clearRect(0, 0, canvas.width, canvas.height); }
+}
+
+function enviarFirma() {
+    if (!canvas) return;
+    var data = canvas.toDataURL('image/png');
+    // Verificar que no este vacio
+    var blank = document.createElement('canvas');
+    blank.width = canvas.width; blank.height = canvas.height;
+    if (data === blank.toDataURL('image/png')) {
+        alert('Por favor dibuja tu firma antes de enviar.');
+        return;
+    }
+    document.getElementById('firmaData').value = data;
+    document.getElementById('formFirma').submit();
+}
+
+// ===== DRAG & DROP + VISTA PREVIA =====
+var dropZone = document.getElementById('dropZone');
+var archivoInput = document.getElementById('archivoInput');
+var previews = document.getElementById('previews');
+var btnSubir = document.getElementById('btnSubir');
+
+if (dropZone) {
+    // Eventos drag
+    dropZone.addEventListener('dragover', function(e){
+        e.preventDefault();
+        dropZone.style.borderColor = '#1d4ed8';
+        dropZone.style.background = '#dbeafe';
+    });
+    dropZone.addEventListener('dragleave', function(){
+        dropZone.style.borderColor = '#93c5fd';
+        dropZone.style.background = '#eff6ff';
+    });
+    dropZone.addEventListener('drop', function(e){
+        e.preventDefault();
+        dropZone.style.borderColor = '#93c5fd';
+        dropZone.style.background = '#eff6ff';
+        mostrarPreviews(e.dataTransfer.files);
+        // Asignar archivos al input
+        archivoInput.files = e.dataTransfer.files;
+    });
+
+    // Seleccion normal
+    archivoInput.addEventListener('change', function(){
+        mostrarPreviews(this.files);
+    });
+}
+
+function mostrarPreviews(files) {
+    if (!previews) return;
+    previews.innerHTML = '';
+    if (files.length === 0) { btnSubir.style.display='none'; return; }
+
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        var reader = new FileReader();
+        var div = document.createElement('div');
+        div.style.cssText = 'border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06);';
+
+        if (file.type.startsWith('image/')) {
+            (function(f, d){
+                var r = new FileReader();
+                r.onload = function(e){
+                    d.innerHTML =
+                        '<img src="'+e.target.result+'" style="width:100%;height:90px;object-fit:cover;display:block;">' +
+                        '<div style="padding:5px 7px;font-size:.69rem;color:#0f172a;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+f.name+'</div>' +
+                        '<div style="padding:0 7px 5px;font-size:.65rem;color:#94a3b8;">'+(f.size/1024).toFixed(0)+' KB</div>';
+                };
+                r.readAsDataURL(f);
+            })(file, div);
+        } else {
+            div.innerHTML =
+                '<div style="display:flex;align-items:center;justify-content:center;height:90px;background:#fff5f5;">' +
+                '<svg fill="none" viewBox="0 0 24 24" stroke="#ef4444" stroke-width="1.5" style="width:36px;height:36px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>' +
+                '</div>' +
+                '<div style="padding:5px 7px;font-size:.69rem;color:#0f172a;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+file.name+'</div>' +
+                '<div style="padding:0 7px 5px;font-size:.65rem;color:#94a3b8;">'+(file.size/1024).toFixed(0)+' KB — PDF</div>';
+        }
+        previews.appendChild(div);
+    }
+    btnSubir.style.display = 'block';
+    btnSubir.textContent = 'Subir ' + files.length + ' documento(s)';
+}
 function mostrarNombre(input){
     if(input.files && input.files[0]){
         document.getElementById('nombreArchivo').textContent = input.files[0].name;
